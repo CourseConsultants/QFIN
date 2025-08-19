@@ -1,5 +1,6 @@
 from base import Exchange, Trade, Order, Product, Msg, Rest
 from typing import List, Dict
+import numpy as np
 
 class PlayerAlgorithm:
     """
@@ -20,6 +21,10 @@ class PlayerAlgorithm:
         self.name = "PlayerAlgorithm"   # The name representing your bot in the trade logs  
         self.timestamp_num = 0          # Counter to track the number of timestamps completed
 
+        self.bids = {product.ticker: [] for product in products}
+        self.asks = {product.ticker: [] for product in products}
+
+        # Slight change to create a dictionary with the bids or asks for every single stock -> scales for future weeks
         # Initialize any other global variables you may need here
         # Examples: position tracking, risk management parameters, strategy state variables
 
@@ -40,9 +45,9 @@ class PlayerAlgorithm:
         
         Returns:
             List[Msg]: List of messages to send to the exchange (orders, cancellations, etc.)
-        """
+        
 
-        """
+    
         This method returns a list of Msg objects you want to send to the exchange.
         There are two types of messages you may want to send: 
 
@@ -61,17 +66,95 @@ class PlayerAlgorithm:
         - create_order(): Creates a new order message
         - remove_order(): Creates a cancel order message
         """
-
         messages = []
-        
+
+        for ticker in book:
+            # Update bid/ask history
+            if book[ticker]["Bids"]:
+                self.bids[ticker].append(book[ticker]["Bids"][0].price)
+            else:
+                self.bids[ticker].append(None)
+            if book[ticker]["Asks"]:
+                self.asks[ticker].append(book[ticker]["Asks"][0].price)
+            else:
+                self.asks[ticker].append(None)
+
+        # Compute mid-price history
+            mid = []
+            for b, a in zip(self.bids[ticker], self.asks[ticker]):
+                if b is not None and a is not None:
+                    mid.append((b + a) / 2)
+                else:
+                    mid.append(None)
+
+        # Compute momentum (difference of consecutive mid-prices)
+            momentum = [ 
+                mid[i] - mid[i-1] if mid[i] is not None and mid[i-1] is not None else 0
+                for i in range(len(mid))
+            ]
+
+        # Compute rolling correlation between momentum and future mid changes
+            window = 20
+            rolling_corr = []
+            for i in range(len(momentum)):
+                if i < window:
+                    rolling_corr.append(0)
+                else:
+                    m_window = momentum[i-window:i]
+                    f_window = [
+                         mid[j+1] - mid[j] 
+                         for j in range(i-window, i) 
+                         if mid[j] is not None and mid[j+1] is not None
+                    ]
+                    if len(f_window) > 1:
+                        m_window = [
+                            momentum[i-window + k] 
+                            for k, j in enumerate(range(i-window, i)) 
+                            if mid[i-window + k] is not None and mid[i-window + k + 1] is not None
+                        ]
+                        if len(m_window) == len(f_window):
+                            corr = np.corrcoef(m_window, f_window)[0, 1]
+                        else:
+                            corr = 0
+                    else:
+                        corr = 0
+                    rolling_corr.append(corr)
+
+        # Determine position
+            position = 0
+            if momentum[-1] > 0 and rolling_corr[-1] > 0:
+                position = 1  # Go long
+            elif momentum[-1] < 0 and rolling_corr[-1] > 0:
+                position = -1  # Go short
+
+        # Send orders if mid_price is valid
+            mid_price = mid[-1]
+            order_size = 5
+            if mid_price is not None:
+                mpv=0.1
+                mid_price_rounded = round(mid_price / mpv) * mpv
+                if position == 1:
+                    messages.append(self.create_order(ticker, order_size, mid_price_rounded, "Buy"))
+                elif position == -1:
+                    messages.append(self.create_order(ticker, order_size, mid_price_rounded, "Sell"))
         # Example trading logic: Place a buy order on the first cycle
         # This is just a demonstration - replace with your actual strategy
-        if self.timestamp_num == 0:
+        #if self.timestamp_num == 0:
             # Place a buy order for 5 units of UEC at price 1005
-            messages.append(self.create_order("UEC", 5, 1005, "Buy"))
-        
+           # messages.append(self.create_order("UEC", 5, 1005, "Buy"))
+         # Increment timestamp once per call
         self.timestamp_num += 1
+
         return messages
+
+    
+    def display_book(self, book):
+        for ticker in book:
+            print(ticker)
+            for side in book[ticker]:
+                print(side)
+                for order in book[ticker][side]:
+                    print(f"{order.rest_dir}, Price: {order.price}, Size: {order.size}")
 
     def create_order(self, ticker: str, size: int, price: float, direction: str) -> Msg:
         """
@@ -93,8 +176,14 @@ class PlayerAlgorithm:
             Automatically assigns a unique order ID and increments the internal counter
         """
         order_idx = self.idx
-        new_order = Order(ticker=ticker, price=price, size=size, order_id=order_idx,
-                          agg_dir=direction, bot_name=self.name)
+        new_order = Order(
+            ticker=ticker,
+            price=price,
+            size=size,
+            order_id=order_idx,
+            agg_dir=direction,
+            bot_name=self.name,
+        )
         new_message = Msg("ORDER", new_order)
         self.idx += 1
         return new_message

@@ -1,9 +1,12 @@
 import platform
 import sys
 import os
+import pandas as pd
+from base import Product
+from your_algo import PlayerAlgorithm
 
+#====================== Setup OS-specific run_game import ======================
 original_sys_path = sys.path.copy()
-
 current_dir = os.path.dirname(os.path.abspath(__file__))
 os_name = platform.system()
 
@@ -19,32 +22,44 @@ elif os_name == "Darwin":
 else:
     raise ValueError("Unsupported OS")
 
-from base import Product
-
 print("Imports Completed")
-
 sys.path = original_sys_path
 
-# ======================Do Not Change Anything above here====================
+# ====================== Simulation Parameters ======================
+num_markets = 1 # Number of different markets
+num_timestamps =20000  # Timestamps per market
 
-# The following variables represent the values we will use when assessing your bot
-# You may change them for testing purposes
-#   (e.g. you may reduce num_timestamps when testing so that you can run simulations faster)
-#   (e.g. you may set fine to 0 to see if your strategy is first profiable without position penalties)
+# Prepare storage for all markets
+all_markets_data = []
 
-from your_algo import PlayerAlgorithm
+# ====================== Run Simulation for Multiple Markets ======================
+for market_idx in range(1, num_markets + 1):
+    print(f"Running market {market_idx}/{num_markets}...")
+    
+    uec = Product("UEC", mpv=0.1, pos_limit=200, fine=20)
+    products = [uec]
+    
+    player_bot = PlayerAlgorithm(products)
+    
+    pnl = run_game(player_bot, num_timestamps, products)
+    
+    # Collect bid/ask data
+    uec_bids = player_bot.bids["UEC"]
+    uec_asks = player_bot.asks["UEC"]
+    
+    # Save data for this market
+    market_df = pd.DataFrame({
+        "Market": market_idx,
+        "Bids": uec_bids,
+        "Asks": uec_asks
+    })
+    all_markets_data.append(market_df)
 
-uec = Product("UEC", mpv=0.1, pos_limit=200, fine=20)
-
-products = [uec]
-
-player_bot = PlayerAlgorithm(products)
-num_timestamps = 20000
-your_pnl = run_game(player_bot, num_timestamps, products)
-
-print(your_pnl)
-
-
-
-
+# ====================== Combine All Markets and Save ======================
+full_df = pd.concat(all_markets_data, ignore_index=True)
+print(pnl)
+#csv_path = os.path.join(current_dir, "Test.csv")
+#print("Saving CSV to:", csv_path)
+#full_df.to_csv(csv_path, index=False)
+print("All markets saved successfully!")
 
