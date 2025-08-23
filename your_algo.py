@@ -1,6 +1,10 @@
 from base import Exchange, Trade, Order, Product, Msg, Rest
 from typing import List, Dict
 import numpy as np
+from collections import deque
+import numpy as np
+from typing import Dict, List
+
 
 class PlayerAlgorithm:
     """
@@ -24,12 +28,57 @@ class PlayerAlgorithm:
         self.bids = {product.ticker: [] for product in products}
         self.asks = {product.ticker: [] for product in products}
 
+        self.mid_prices = {product.ticker: deque(maxlen=1000) for product in products}
+        self.momentum = {product.ticker: deque(maxlen=1000) for product in products}
+        self.rolling_corr = {product.ticker: deque(maxlen=1000) for product in products}
+        self.position = {product.ticker: 0 for product in products}
+        self.predicted_positions = {product.ticker: 0 for product in products}
+        self.idx=0
+
+        
+
+
+
         # Slight change to create a dictionary with the bids or asks for every single stock -> scales for future weeks
         # Initialize any other global variables you may need here
         # Examples: position tracking, risk management parameters, strategy state variables
+    def getMyPosition(self, ticker: str) -> int:
+        return self.position.get(ticker, 0)
+    
+    def process_trades(self, trades: List[Trade]) -> None:
+        for trade in trades:
+        # If this bot was the aggressor (sent the order)
+            if trade.agg_bot == self.name:
+                #print(f"[TRADE] Ticker={trade.ticker}, AggDir={trade.agg_dir}, "
+                      #f"RestDir={trade.rest_dir}, Size={trade.size}, "
+                      #f"NewPosition={self.getMyPosition(trade.ticker)}")
+                if trade.agg_dir == "Buy":
+                    self.position[trade.ticker] += trade.size
+                elif trade.agg_dir == "Sell":
+                    self.position[trade.ticker] -= trade.size
 
-    def send_messages(self, book: Dict[str, Dict[str, List[Rest]]]) -> List[Msg]:
-        """
+        # If this bot was the resting order (got hit)
+            if trade.rest_bot == self.name:
+                #print(f"[TRADE] Ticker={trade.ticker}, AggDir={trade.agg_dir}, "
+                      #f"RestDir={trade.rest_dir}, Size={trade.size}, "
+                      #f"NewPosition={self.getMyPosition(trade.ticker)}")
+                if trade.rest_dir == "Buy":
+                    self.position[trade.ticker] += trade.size
+                elif trade.rest_dir == "Sell":
+                    self.position[trade.ticker] -= trade.size
+
+    # Clamp to position limits just in case
+        for ticker in self.position:
+            self.position[ticker] = max(-200, min(200, self.position[ticker]))
+            #print(f"[CLAMP] Ticker={ticker}, ClampedPosition={self.position[ticker]}")
+
+    
+    
+
+        """ Optimized trading logic:
+     - Updates only the *latest* bid, ask, mid, momentum, and rolling correlation
+     - Avoids recalculating entire histories each tick
+
         Main trading logic method that analyzes the order book and generates trading decisions.
         
         This method is called on each trading cycle and should implement your core trading strategy.
@@ -65,87 +114,96 @@ class PlayerAlgorithm:
         To make sending and removing orders easier, we have provided the helper functions:
         - create_order(): Creates a new order message
         - remove_order(): Creates a cancel order message
-        """
+    """
+    def send_messages(self, book: Dict[str, Dict[str, List["Rest"]]]) -> List["Msg"]:
         messages = []
-
+        window = 20
+        order_size = 5
+        mpv = 0.1  # minimum price variation (tick size)
         for ticker in book:
-            # Update bid/ask history
-            if book[ticker]["Bids"]:
-                self.bids[ticker].append(book[ticker]["Bids"][0].price)
+        # --- Extract top-of-book prices ---
+            best_bid = book[ticker]["Bids"][0].price if book[ticker]["Bids"] else None
+            best_ask = book[ticker]["Asks"][0].price if book[ticker]["Asks"] else None
+
+        # --- Mid price calculation ---
+            if best_bid is not None and best_ask is not None:
+                new_mid = (best_bid + best_ask) / 2
+                mid_price_rounded = round(new_mid / mpv) * mpv
             else:
-                self.bids[ticker].append(None)
-            if book[ticker]["Asks"]:
-                self.asks[ticker].append(book[ticker]["Asks"][0].price)
+                new_mid = None
+                mid_price_rounded = None
+
+        # --- Append mid price ---
+            self.mid_prices[ticker].append(new_mid)
+
+        # --- Momentum calculation ---
+            if len(self.mid_prices[ticker]) >= 2:
+                m = self.mid_prices[ticker][-1] - self.mid_prices[ticker][-2] \
+                    if self.mid_prices[ticker][-1] is not None and self.mid_prices[ticker][-2] is not None else 0
+                self.momentum[ticker].append(m)
             else:
-                self.asks[ticker].append(None)
+                self.momentum[ticker].append(0)
 
-        # Compute mid-price history
-            mid = []
-            for b, a in zip(self.bids[ticker], self.asks[ticker]):
-                if b is not None and a is not None:
-                    mid.append((b + a) / 2)
-                else:
-                    mid.append(None)
+        # --- Rolling correlation calculation ---
+            if len(self.momentum[ticker]) >= window and len(self.mid_prices[ticker]) > window:
+                m_window = list(self.momentum[ticker])[-window:]
+                f_window = [
+                    self.mid_prices[ticker][i+1] - self.mid_prices[ticker][i]
+                    for i in range(len(self.mid_prices[ticker]) - window - 1,
+                                   len(self.mid_prices[ticker]) - 1)
+                    if self.mid_prices[ticker][i] is not None and self.mid_prices[ticker][i+1] is not None
+                ]
+                corr = np.corrcoef(m_window, f_window)[0, 1] if len(f_window) == len(m_window) and len(f_window) > 1 else 0
+                self.rolling_corr[ticker].append(corr)
+            else:
+                self.rolling_corr[ticker].append(0)
 
-        # Compute momentum (difference of consecutive mid-prices)
-            momentum = [ 
-                mid[i] - mid[i-1] if mid[i] is not None and mid[i-1] is not None else 0
-                for i in range(len(mid))
-            ]
+        # --- Trading signal ---
+            last_momentum = self.momentum[ticker][-1]
+            last_corr = self.rolling_corr[ticker][-1]
+            position_signal = 0
+            if last_momentum > 0 and last_corr > 0:
+                position_signal = 1  # buy
+            elif last_momentum < 0 and last_corr > 0:
+                position_signal = -1  # sell
 
-        # Compute rolling correlation between momentum and future mid changes
-            window = 20
-            rolling_corr = []
-            for i in range(len(momentum)):
-                if i < window:
-                    rolling_corr.append(0)
-                else:
-                    m_window = momentum[i-window:i]
-                    f_window = [
-                         mid[j+1] - mid[j] 
-                         for j in range(i-window, i) 
-                         if mid[j] is not None and mid[j+1] is not None
-                    ]
-                    if len(f_window) > 1:
-                        m_window = [
-                            momentum[i-window + k] 
-                            for k, j in enumerate(range(i-window, i)) 
-                            if mid[i-window + k] is not None and mid[i-window + k + 1] is not None
-                        ]
-                        if len(m_window) == len(f_window):
-                            corr = np.corrcoef(m_window, f_window)[0, 1]
-                        else:
-                            corr = 0
-                    else:
-                        corr = 0
-                    rolling_corr.append(corr)
+        # --- Position limit enforcement ---
+            if ticker not in self.predicted_positions:
+                 self.predicted_positions[ticker] = self.getMyPosition(ticker)
+        
+            predicted_pos = self.predicted_positions[ticker]
+            
 
-        # Determine position
-            position = 0
-            if momentum[-1] > 0 and rolling_corr[-1] > 0:
-                position = 1  # Go long
-            elif momentum[-1] < 0 and rolling_corr[-1] > 0:
-                position = -1  # Go short
+        
 
-        # Send orders if mid_price is valid
-            mid_price = mid[-1]
-            order_size = 5
-            if mid_price is not None:
-                mpv=0.1
-                mid_price_rounded = round(mid_price / mpv) * mpv
-                if position == 1:
-                    messages.append(self.create_order(ticker, order_size, mid_price_rounded, "Buy"))
-                elif position == -1:
-                    messages.append(self.create_order(ticker, order_size, mid_price_rounded, "Sell"))
-        # Example trading logic: Place a buy order on the first cycle
-        # This is just a demonstration - replace with your actual strategy
-        #if self.timestamp_num == 0:
-            # Place a buy order for 5 units of UEC at price 1005
-           # messages.append(self.create_order("UEC", 5, 1005, "Buy"))
-         # Increment timestamp once per call
+            if mid_price_rounded is not None:
+                if position_signal == 1:
+                    allowed_size = max(0, min(order_size, 200 - predicted_pos))
+                    if allowed_size > 0:
+                        #print(f"[SEND] Ticker={ticker}, Signal={position_signal}, "
+                              #f"CurrentPos={self.getMyPosition(ticker)}, "
+                              #f"PredictedPos={predicted_pos}, AllowedSize={allowed_size}")
+                        messages.append(self.create_order(ticker, allowed_size, mid_price_rounded, "Buy"))
+                        self.predicted_positions[ticker] += allowed_size
+                       
+                elif position_signal == -1:
+                    allowed_size = max(0, min(order_size, predicted_pos + 200))
+                    
+                    if allowed_size > 0:
+                        #print(f"[SEND] Ticker={ticker}, Signal={position_signal}, "
+                              #f"CurrentPos={self.getMyPosition(ticker)}, "
+                              #f"PredictedPos={predicted_pos}, AllowedSize={allowed_size}")
+                        messages.append(self.create_order(ticker, allowed_size, mid_price_rounded, "Sell"))
+                        self.predicted_positions[ticker] -= allowed_size
+            
+                        
+
+           
+
         self.timestamp_num += 1
-
         return messages
+
+
 
     
     def display_book(self, book):

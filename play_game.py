@@ -27,7 +27,7 @@ sys.path = original_sys_path
 
 # ====================== Simulation Parameters ======================
 num_markets = 1 # Number of different markets
-num_timestamps =20000  # Timestamps per market
+num_timestamps = 20000  # Timestamps per market
 
 # Prepare storage for all markets
 all_markets_data = []
