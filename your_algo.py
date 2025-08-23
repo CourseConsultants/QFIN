@@ -22,7 +22,7 @@ class PlayerAlgorithm:
             products: List of all tradeable products available in the current round
         """
         self.products = products        # A list of all tradeable products in the current round
-        self.name = "PlayerAlgorithm"   # The name representing your bot in the trade logs  
+        self.name = "TT5"   # The name representing your bot in the trade logs  
         self.timestamp_num = 0          # Counter to track the number of timestamps completed
         self.team_members=["Nick", "Chelsea"]
 
