@@ -34,6 +34,7 @@ class PlayerAlgorithm:
         self.position = {product.ticker: 0 for product in products}
         self.predicted_positions = {product.ticker: 0 for product in products}
         self.idx=0
+        self.open_orders = {} 
 
         
 
@@ -55,10 +56,12 @@ class PlayerAlgorithm:
                       #f"NewPosition={self.getMyPosition(trade.ticker)}")
                 if trade.agg_dir == "Buy":
                     self.position[trade.ticker] += trade.size
-                    self.predicted_positions[trade.ticker] -= trade.size 
+                    
+                     
                 elif trade.agg_dir == "Sell":
                     self.position[trade.ticker] -= trade.size
-                    self.predicted_positions[trade.ticker] += trade.size
+                    
+                    
 
         # If this bot was the resting order (got hit)
             if trade.rest_bot == self.name:
@@ -66,16 +69,17 @@ class PlayerAlgorithm:
                 #print(f"[TRADE] Ticker={trade.ticker}, AggDir={trade.agg_dir}, "
                       #f"RestDir={trade.rest_dir}, Size={trade.size}, "
                       #f"NewPosition={self.getMyPosition(trade.ticker)}")
-                if trade.rest_bot == "Buy":
+                if trade.agg_dir == "Buy":
                     self.position[trade.ticker] += trade.size
-                    self.predicted_positions[trade.ticker] -= trade.size
-                elif trade.rest_bot == "Sell":
+                    
+                    
+                elif trade.agg_dir == "Sell":
                     self.position[trade.ticker] -= trade.size
-                    self.predicted_positions[trade.ticker] += trade.size
+                    
+                   
 
     # Clamp to position limits just in case
-        for ticker in self.position:
-            self.position[ticker] = max(-200, min(200, self.position[ticker]))
+      
             #print(f"[CLAMP] Ticker={ticker}, ClampedPosition={self.position[ticker]}")
 
     
@@ -189,52 +193,73 @@ class PlayerAlgorithm:
                 position_signal = -1  # sell
 
         # --- Position limit enforcement ---
-            if ticker not in self.predicted_positions:
-                 self.predicted_positions[ticker] = self.getMyPosition(ticker)
         
-            predicted_pos = self.predicted_positions.get(ticker, self.getMyPosition(ticker))
-
-            for old_order in self.bids[ticker] + self.asks[ticker]:
-                if (old_order.agg_dir == "Buy" and predicted_pos + old_order.size > 200) or \
-                    (old_order.agg_dir == "Sell" and predicted_pos - old_order.size < -200):
-                    messages.append(self.remove_order(old_order.order_id))
-                    if old_order.agg_dir == "Buy":
-                        predicted_pos -= old_order.size
-                    else:
-                        predicted_pos += old_order.size
+            
+            
 
 
             if mid_price_rounded is not None:
-                if position_signal == 1:
-                    allowed_size = max(0, min(order_size, 200 - predicted_pos))
-                    if allowed_size > 0:
-                        #print(f"[SEND] Ticker={ticker}, Signal={position_signal}, "
-                              #f"CurrentPos={self.getMyPosition(ticker)}, "
-                              #f"PredictedPos={predicted_pos}, AllowedSize={allowed_size}")
-                        messages.append(self.create_order(ticker, allowed_size, mid_price_rounded, "Buy"))
-                        predicted_pos += allowed_size
-                       
+                real_pos=self.getMyPosition(ticker)
+                print(real_pos)
+
+                max_pos = 200
+                min_pos = -200
+
+
+
+                if position_signal == 1: 
+                    allowed_size = min(order_size, max_pos -self.predicted_positions[ticker] )
                 elif position_signal == -1:
-                    allowed_size = max(0, min(order_size, predicted_pos + 200))
+                    allowed_size = min(order_size, self.predicted_positions[ticker] - min_pos)
+                else:
+                    allowed_size = 0
+
+                projected_pos = real_pos + self.predicted_positions[ticker]
+
+                if position_signal == 1 and projected_pos + allowed_size<200:
                     
                     if allowed_size > 0:
-                        #print(f"[SEND] Ticker={ticker}, Signal={position_signal}, "
-                              #f"CurrentPos={self.getMyPosition(ticker)}, "
-                              #f"PredictedPos={predicted_pos}, AllowedSize={allowed_size}")
-                        messages.append(self.create_order(ticker, allowed_size, mid_price_rounded, "Sell"))
-                        predicted_pos -= allowed_size
+                        msg, order_id = self.create_order(ticker, allowed_size, mid_price_rounded, "Buy")   
+                        messages.append(msg)                    
+
+
+                        self.predicted_positions[ticker] += allowed_size
+                        self.open_orders[order_id] = {"ticker": ticker,"direction": "Buy",  "size": allowed_size}
+                elif position_signal == -1 and projected_pos + allowed_size >-200:
+                    
+                    if allowed_size > 0:
+                        msg, order_id = self.create_order(ticker, allowed_size, mid_price_rounded, "Sell")  
+
+                     
+                        messages.append(msg)
+                        self.predicted_positions[ticker] -= allowed_size
+                        self.open_orders[order_id] = {"ticker": ticker,"direction": "Sell",  "size": allowed_size}
+
+            for order_id, order_info in list(self.open_orders.items()):
+                ticker = order_info["ticker"]
+                direction = order_info["direction"]
+                size = order_info["size"]
+                if self.predicted_positions[ticker] >= 190 and direction == "Buy":
+                    messages.append(self.remove_order(order_id))
+                    self.predicted_positions[ticker] -= size  # <-- update predicted
+                    del self.open_orders[order_id]
+                elif self.predicted_positions[ticker] <= -190 and direction == "Sell":
+                    messages.append(self.remove_order(order_id))
+                    self.predicted_positions[ticker] += size  # <-- update predicted
+                    del self.open_orders[order_id]
+
             
 
 
 
             
-            predicted_pos = max(-200, min(200, predicted_pos))
-            self.predicted_positions[ticker] = predicted_pos
+            
+            print(f"[DEBUG] {ticker}: RealPos={self.getMyPosition(ticker)}, "f"PredictedPos={self.predicted_positions[ticker]}")
             
                         
 
            
-
+           
         self.timestamp_num += 1
         return messages
 
@@ -279,7 +304,7 @@ class PlayerAlgorithm:
         )
         new_message = Msg("ORDER", new_order)
         self.idx += 1
-        return new_message
+        return new_message, order_idx
 
     def remove_order(self, order_idx):
         """
