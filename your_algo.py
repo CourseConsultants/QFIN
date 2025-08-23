@@ -8,7 +8,7 @@ from typing import Dict, List
 
 class PlayerAlgorithm:
     """
-    Main trading algorithm class that implements the player's trading strategy.
+    Main trcading algorithm class that implements the player's trading strategy.
     
     This class handles all trading decisions, order management, and market analysis
     for a single trading bot in the exchange simulation.
@@ -24,6 +24,7 @@ class PlayerAlgorithm:
         self.products = products        # A list of all tradeable products in the current round
         self.name = "PlayerAlgorithm"   # The name representing your bot in the trade logs  
         self.timestamp_num = 0          # Counter to track the number of timestamps completed
+        self.team_members=["Nick", "Chelsea"]
 
         self.bids = {product.ticker: [] for product in products}
         self.asks = {product.ticker: [] for product in products}
