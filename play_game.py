@@ -62,4 +62,3 @@ print(pnl)
 #print("Saving CSV to:", csv_path)
 #full_df.to_csv(csv_path, index=False)
 print("All markets saved successfully!")
-

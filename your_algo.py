@@ -49,23 +49,29 @@ class PlayerAlgorithm:
         for trade in trades:
         # If this bot was the aggressor (sent the order)
             if trade.agg_bot == self.name:
+                print("You did a trade!")
                 #print(f"[TRADE] Ticker={trade.ticker}, AggDir={trade.agg_dir}, "
                       #f"RestDir={trade.rest_dir}, Size={trade.size}, "
                       #f"NewPosition={self.getMyPosition(trade.ticker)}")
                 if trade.agg_dir == "Buy":
                     self.position[trade.ticker] += trade.size
+                    self.predicted_positions[trade.ticker] -= trade.size 
                 elif trade.agg_dir == "Sell":
                     self.position[trade.ticker] -= trade.size
+                    self.predicted_positions[trade.ticker] += trade.size
 
         # If this bot was the resting order (got hit)
             if trade.rest_bot == self.name:
+                print("You did a trade!")
                 #print(f"[TRADE] Ticker={trade.ticker}, AggDir={trade.agg_dir}, "
                       #f"RestDir={trade.rest_dir}, Size={trade.size}, "
                       #f"NewPosition={self.getMyPosition(trade.ticker)}")
-                if trade.rest_dir == "Buy":
+                if trade.rest_bot == "Buy":
                     self.position[trade.ticker] += trade.size
-                elif trade.rest_dir == "Sell":
+                    self.predicted_positions[trade.ticker] -= trade.size
+                elif trade.rest_bot == "Sell":
                     self.position[trade.ticker] -= trade.size
+                    self.predicted_positions[trade.ticker] += trade.size
 
     # Clamp to position limits just in case
         for ticker in self.position:
@@ -73,9 +79,24 @@ class PlayerAlgorithm:
             #print(f"[CLAMP] Ticker={ticker}, ClampedPosition={self.position[ticker]}")
 
     
-    
-
-        """ Optimized trading logic:
+    """
+        Processes completed trades and updates internal state accordingly.
+        
+        This method is called after each bot turn with a list of all trades
+        that occurred. Use this to:
+        - Track your trading performance
+        - Update position information
+        - Analyze market activity
+        - etc.
+        
+        Args:
+            trades: List of Trade objects representing all completed trades in the most recent bot turn
+        
+        Note:
+            - Bot names are anonymized except for your own
+            - Order IDs are hidden except for your own
+     
+         Optimized trading logic:
      - Updates only the *latest* bid, ask, mid, momentum, and rolling correlation
      - Avoids recalculating entire histories each tick
 
@@ -171,10 +192,17 @@ class PlayerAlgorithm:
             if ticker not in self.predicted_positions:
                  self.predicted_positions[ticker] = self.getMyPosition(ticker)
         
-            predicted_pos = self.predicted_positions[ticker]
-            
+            predicted_pos = self.predicted_positions.get(ticker, self.getMyPosition(ticker))
 
-        
+            for old_order in self.bids[ticker] + self.asks[ticker]:
+                if (old_order.agg_dir == "Buy" and predicted_pos + old_order.size > 200) or \
+                    (old_order.agg_dir == "Sell" and predicted_pos - old_order.size < -200):
+                    messages.append(self.remove_order(old_order.order_id))
+                    if old_order.agg_dir == "Buy":
+                        predicted_pos -= old_order.size
+                    else:
+                        predicted_pos += old_order.size
+
 
             if mid_price_rounded is not None:
                 if position_signal == 1:
@@ -184,7 +212,7 @@ class PlayerAlgorithm:
                               #f"CurrentPos={self.getMyPosition(ticker)}, "
                               #f"PredictedPos={predicted_pos}, AllowedSize={allowed_size}")
                         messages.append(self.create_order(ticker, allowed_size, mid_price_rounded, "Buy"))
-                        self.predicted_positions[ticker] += allowed_size
+                        predicted_pos += allowed_size
                        
                 elif position_signal == -1:
                     allowed_size = max(0, min(order_size, predicted_pos + 200))
@@ -194,7 +222,14 @@ class PlayerAlgorithm:
                               #f"CurrentPos={self.getMyPosition(ticker)}, "
                               #f"PredictedPos={predicted_pos}, AllowedSize={allowed_size}")
                         messages.append(self.create_order(ticker, allowed_size, mid_price_rounded, "Sell"))
-                        self.predicted_positions[ticker] -= allowed_size
+                        predicted_pos -= allowed_size
+            
+
+
+
+            
+            predicted_pos = max(-200, min(200, predicted_pos))
+            self.predicted_positions[ticker] = predicted_pos
             
                         
 
@@ -278,26 +313,4 @@ class PlayerAlgorithm:
         """
         self.idx = idx
 
-    def process_trades(self, trades: List[Trade]) -> None:
-        """
-        Processes completed trades and updates internal state accordingly.
-        
-        This method is called after each bot turn with a list of all trades
-        that occurred. Use this to:
-        - Track your trading performance
-        - Update position information
-        - Analyze market activity
-        - etc.
-        
-        Args:
-            trades: List of Trade objects representing all completed trades in the most recent bot turn
-        
-        Note:
-            - Bot names are anonymized except for your own
-            - Order IDs are hidden except for your own
-        """
-        for trade in trades:
-            # Check if this bot participated in the trade (either as aggressor or resting order)
-            # This is just a demonstration - replace with your actual trade processing logic
-            if trade.agg_bot == self.name or trade.rest_bot == self.name:
-                print("You did a trade!")
+   
