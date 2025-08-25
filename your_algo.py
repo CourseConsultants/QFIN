@@ -37,6 +37,14 @@ class PlayerAlgorithm:
         self.idx=0
         self.open_orders = {} 
 
+        self.rolling_window_size = 20  # same as your window
+        self.rolling_window = {product.ticker: deque(maxlen=self.rolling_window_size) for product in products}
+        self.rolling_sum_x = {product.ticker: 0.0 for product in products}
+        self.rolling_sum_y = {product.ticker: 0.0 for product in products}
+        self.rolling_sum_x2 = {product.ticker: 0.0 for product in products}
+        self.rolling_sum_y2 = {product.ticker: 0.0 for product in products}
+        self.rolling_sum_xy = {product.ticker: 0.0 for product in products}
+
         
 
 
@@ -51,7 +59,7 @@ class PlayerAlgorithm:
         for trade in trades:
         # If this bot was the aggressor (sent the order)
             if trade.agg_bot == self.name:
-                print("You did a trade!")
+                #print("You did a trade!")
                 #print(f"[TRADE] Ticker={trade.ticker}, AggDir={trade.agg_dir}, "
                       #f"RestDir={trade.rest_dir}, Size={trade.size}, "
                       #f"NewPosition={self.getMyPosition(trade.ticker)}")
@@ -71,81 +79,53 @@ class PlayerAlgorithm:
                       #f"RestDir={trade.rest_dir}, Size={trade.size}, "
                       #f"NewPosition={self.getMyPosition(trade.ticker)}")
                 if trade.agg_dir == "Buy":
-                    self.position[trade.ticker] += trade.size
+                    self.position[trade.ticker] -= trade.size
+                        # --- Adjust predicted position if this trade was for one of our open orders ---
+                    if hasattr(trade, "order_id") and trade.order_id in self.open_orders:
+                        order_info = self.open_orders[trade.order_id]
+                        filled_size = min(order_info['size'], trade.size) 
+                        self.predicted_positions[trade.ticker] -= filled_size
+                        order_info['size'] -= filled_size
+                        if order_info['size'] <= 0:
+                            del self.open_orders[trade.order_id]
                     
                     
                 elif trade.agg_dir == "Sell":
-                    self.position[trade.ticker] -= trade.size
+                    self.position[trade.ticker] += trade.size    # --- Adjust predicted position if this trade was for one of our open orders ---
+                    if hasattr(trade, "order_id") and trade.order_id in self.open_orders:
+                        order_info = self.open_orders[trade.order_id]
+                        filled_size = min(order_info['size'], trade.size) 
+                        self.predicted_positions[trade.ticker] -= filled_size
+                        order_info['size'] -= filled_size
+                        if order_info['size'] <=0:
+                            del self.open_orders[trade.order_id]
                     
+
+            
                    
-
-    # Clamp to position limits just in case
-      
-            #print(f"[CLAMP] Ticker={ticker}, ClampedPosition={self.position[ticker]}")
-
     
-    """
-        Processes completed trades and updates internal state accordingly.
-        
-        This method is called after each bot turn with a list of all trades
-        that occurred. Use this to:
-        - Track your trading performance
-        - Update position information
-        - Analyze market activity
-        - etc.
-        
-        Args:
-            trades: List of Trade objects representing all completed trades in the most recent bot turn
-        
-        Note:
-            - Bot names are anonymized except for your own
-            - Order IDs are hidden except for your own
-     
-         Optimized trading logic:
-     - Updates only the *latest* bid, ask, mid, momentum, and rolling correlation
-     - Avoids recalculating entire histories each tick
 
-        Main trading logic method that analyzes the order book and generates trading decisions.
-        
-        This method is called on each trading cycle and should implement your core trading strategy.
-        It analyzes the current market state and returns a list of messages to send to the exchange.
-        
-        Args:
-            book: Complete order book structure organized as:
-                  {ticker: {Bid: [resting_orders], Ask: [resting_orders]}}
-                  - ticker: Product identifier (e.g., "UEC")
-                  - Bid: List of resting buy orders (descending price order - highest bid first)
-                  - Ask: List of resting sell orders (ascending price order - lowest ask first)
-                  - resting_orders: List of Rest objects representing pending orders
-        
-        Returns:
-            List[Msg]: List of messages to send to the exchange (orders, cancellations, etc.)
-        
-
-    
-        This method returns a list of Msg objects you want to send to the exchange.
-        There are two types of messages you may want to send: 
-
-        1. Sending an order (Msg with "ORDER" type and Order object)
-        2. Removing an order (Msg with "REMOVE" type and order ID)
-        
-        When sending an order, your Msg object should be created with:
-        - First argument: the string "ORDER"
-        - Second argument: an Order object with your desired trade parameters
-        
-        When removing an order, your Msg object should be created with:
-        - First argument: the string "REMOVE" 
-        - Second argument: the ID of the order you want to cancel
-
-        To make sending and removing orders easier, we have provided the helper functions:
-        - create_order(): Creates a new order message
-        - remove_order(): Creates a cancel order message
-    """
     def send_messages(self, book: Dict[str, Dict[str, List["Rest"]]]) -> List["Msg"]:
         messages = []
         window = 20
         order_size = 5
         mpv = 0.1  # minimum price variation (tick size)
+        for order_id, order_info in list(self.open_orders.items()):
+                ticker2 = order_info["ticker"]
+                direction = order_info["direction"]
+                size = order_info["size"]
+                price = order_info.get("price", None)
+                mid = self.mid_prices[ticker2][-1]
+
+                if mid is not None and price is not None:
+                    if direction == "Buy" and mid < price - 5:
+                        messages.append(self.remove_order(order_id))
+                        self.predicted_positions[ticker2] -= order_info['size'] 
+                        del self.open_orders[order_id]  
+                    elif direction == "Sell" and mid > price + 5:
+                        messages.append(self.remove_order(order_id))
+                        self.predicted_positions[ticker2] -= order_info['size'] 
+                        del self.open_orders[order_id]
         for ticker in book:
         # --- Extract top-of-book prices ---
             best_bid = book[ticker]["Bids"][0].price if book[ticker]["Bids"] else None
@@ -171,18 +151,45 @@ class PlayerAlgorithm:
                 self.momentum[ticker].append(0)
 
         # --- Rolling correlation calculation ---
-            if len(self.momentum[ticker]) >= window and len(self.mid_prices[ticker]) > window:
-                m_window = list(self.momentum[ticker])[-window:]
-                f_window = [
-                    self.mid_prices[ticker][i+1] - self.mid_prices[ticker][i]
-                    for i in range(len(self.mid_prices[ticker]) - window - 1,
-                                   len(self.mid_prices[ticker]) - 1)
-                    if self.mid_prices[ticker][i] is not None and self.mid_prices[ticker][i+1] is not None
-                ]
-                corr = np.corrcoef(m_window, f_window)[0, 1] if len(f_window) == len(m_window) and len(f_window) > 1 else 0
-                self.rolling_corr[ticker].append(corr)
+            # --- Rolling correlation calculation (incremental) ---
+            x_new = self.momentum[ticker][-1]
+            if len(self.mid_prices[ticker]) >= 2 and self.mid_prices[ticker][-1] is not None and self.mid_prices[ticker][-2] is not None:
+                y_new = self.mid_prices[ticker][-1] - self.mid_prices[ticker][-2]
             else:
-                self.rolling_corr[ticker].append(0)
+                y_new = 0.0
+
+            window_deque = self.rolling_window[ticker]
+
+# Remove oldest values if deque is full
+            if len(window_deque) == self.rolling_window_size:
+                 x_old, y_old = window_deque.popleft()
+                 self.rolling_sum_x[ticker] -= x_old
+                 self.rolling_sum_y[ticker] -= y_old
+                 self.rolling_sum_x2[ticker] -= x_old**2
+                 self.rolling_sum_y2[ticker] -= y_old**2
+                 self.rolling_sum_xy[ticker] -= x_old * y_old
+
+# Add new values
+            window_deque.append((x_new, y_new))
+            self.rolling_sum_x[ticker] += x_new
+            self.rolling_sum_y[ticker] += y_new
+            self.rolling_sum_x2[ticker] += x_new**2
+            self.rolling_sum_y2[ticker] += y_new**2
+            self.rolling_sum_xy[ticker] += x_new * y_new
+
+# Compute correlation
+            n = len(window_deque)
+            if n > 1:
+                 numerator = n*self.rolling_sum_xy[ticker] - self.rolling_sum_x[ticker]*self.rolling_sum_y[ticker]
+                 denominator = ((n*self.rolling_sum_x2[ticker] - self.rolling_sum_x[ticker]**2) *
+                                (n*self.rolling_sum_y2[ticker] - self.rolling_sum_y[ticker]**2))**0.5
+                 corr = numerator / denominator if denominator != 0 else 0
+            else:
+                 corr = 0
+            self.rolling_corr[ticker].append(corr)
+
+    
+
 
         # --- Trading signal ---
             last_momentum = self.momentum[ticker][-1]
@@ -194,19 +201,11 @@ class PlayerAlgorithm:
                 position_signal = -1  # sell
 
         # --- Position limit enforcement ---
-        
-            
-            
-
-
             if mid_price_rounded is not None:
                 real_pos=self.getMyPosition(ticker)
-                print(real_pos)
 
                 max_pos = 200
                 min_pos = -200
-
-
 
                 if position_signal == 1: 
                     allowed_size = min(order_size, max_pos -self.predicted_positions[ticker] )
@@ -220,20 +219,16 @@ class PlayerAlgorithm:
                 if position_signal == 1 and projected_pos + allowed_size<200:
                     
                     if allowed_size > 0:
+                        self.predicted_positions[ticker] += allowed_size
                         msg, order_id = self.create_order(ticker, allowed_size, mid_price_rounded, "Buy")   
                         messages.append(msg)                    
-
-
-                        self.predicted_positions[ticker] += allowed_size
                         self.open_orders[order_id] = {"ticker": ticker,"direction": "Buy",  "size": allowed_size}
                 elif position_signal == -1 and projected_pos + allowed_size >-200:
                     
                     if allowed_size > 0:
-                        msg, order_id = self.create_order(ticker, allowed_size, mid_price_rounded, "Sell")  
-
-                     
-                        messages.append(msg)
                         self.predicted_positions[ticker] -= allowed_size
+                        msg, order_id = self.create_order(ticker, allowed_size, mid_price_rounded, "Sell")  
+                        messages.append(msg)
                         self.open_orders[order_id] = {"ticker": ticker,"direction": "Sell",  "size": allowed_size}
 
             for order_id, order_info in list(self.open_orders.items()):
@@ -250,14 +245,7 @@ class PlayerAlgorithm:
                     del self.open_orders[order_id]
 
             
-
-
-
-            
-            
-            print(f"[DEBUG] {ticker}: RealPos={self.getMyPosition(ticker)}, "f"PredictedPos={self.predicted_positions[ticker]}")
-            
-                        
+                     #print(f"[DEBUG] {ticker}: RealPos={self.getMyPosition(ticker)}, "f"PredictedPos={self.predicted_positions[ticker]}")    
 
            
            
@@ -340,3 +328,61 @@ class PlayerAlgorithm:
         self.idx = idx
 
    
+
+    '''''
+        Processes completed trades and updates internal state accordingly.
+        
+        This method is called after each bot turn with a list of all trades
+        that occurred. Use this to:
+        - Track your trading performance
+        - Update position information
+        - Analyze market activity
+        - etc.
+        
+        Args:
+            trades: List of Trade objects representing all completed trades in the most recent bot turn
+        
+        Note:
+            - Bot names are anonymized except for your own
+            - Order IDs are hidden except for your own
+     
+         Optimized trading logic:
+     - Updates only the *latest* bid, ask, mid, momentum, and rolling correlation
+     - Avoids recalculating entire histories each tick
+
+        Main trading logic method that analyzes the order book and generates trading decisions.
+        
+        This method is called on each trading cycle and should implement your core trading strategy.
+        It analyzes the current market state and returns a list of messages to send to the exchange.
+        
+        Args:
+            book: Complete order book structure organized as:
+                  {ticker: {Bid: [resting_orders], Ask: [resting_orders]}}
+                  - ticker: Product identifier (e.g., "UEC")
+                  - Bid: List of resting buy orders (descending price order - highest bid first)
+                  - Ask: List of resting sell orders (ascending price order - lowest ask first)
+                  - resting_orders: List of Rest objects representing pending orders
+        
+        Returns:
+            List[Msg]: List of messages to send to the exchange (orders, cancellations, etc.)
+        
+
+    
+        This method returns a list of Msg objects you want to send to the exchange.
+        There are two types of messages you may want to send: 
+
+        1. Sending an order (Msg with "ORDER" type and Order object)
+        2. Removing an order (Msg with "REMOVE" type and order ID)
+        
+        When sending an order, your Msg object should be created with:
+        - First argument: the string "ORDER"
+        - Second argument: an Order object with your desired trade parameters
+        
+        When removing an order, your Msg object should be created with:
+        - First argument: the string "REMOVE" 
+        - Second argument: the ID of the order you want to cancel
+
+        To make sending and removing orders easier, we have provided the helper functions:
+        - create_order(): Creates a new order message
+        - remove_order(): Creates a cancel order message
+    '''
