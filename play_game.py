@@ -33,32 +33,32 @@ num_timestamps = 20000  # Timestamps per market
 all_markets_data = []
 
 # ====================== Run Simulation for Multiple Markets ======================
-for market_idx in range(1, num_markets + 1):
-    print(f"Running market {market_idx}/{num_markets}...")
+num_runs = 5
+all_pnls = []  # store pnl for each run
+all_markets_data = []
+
+for run_idx in range(1, num_runs + 1):
+    print(f"\n========== Run {run_idx}/{num_runs} ==========")
     
-    uec = Product("UEC", mpv=0.1, pos_limit=200, fine=20)
-    products = [uec]
-    
-    player_bot = PlayerAlgorithm(products)
-    
-    pnl = run_game(player_bot, num_timestamps, products)
-    
-    # Collect bid/ask data
-    uec_bids = player_bot.bids["UEC"]
-    uec_asks = player_bot.asks["UEC"]
-    
-    # Save data for this market
-    market_df = pd.DataFrame({
-        "Market": market_idx,
-        "Bids": uec_bids,
-        "Asks": uec_asks
-    })
-    all_markets_data.append(market_df)
+    for market_idx in range(1, num_markets + 1):
+        print(f"Running market {market_idx}/{num_markets}...")
+        
+        uec = Product("UEC", mpv=0.1, pos_limit=200, fine=20)
+        products = [uec]
+        player_bot = PlayerAlgorithm(products)
+        full_df = run_game(player_bot,num_timestamps,products)
+        pnl = player_bot.positions["Cash"]
+        print(pnl)
+
+    # record pnl for this run
+        all_pnls.append(pnl)
 
 # ====================== Combine All Markets and Save ======================
-full_df = pd.concat(all_markets_data, ignore_index=True)
-print(pnl)
-#csv_path = os.path.join(current_dir, "Test.csv")
-#print("Saving CSV to:", csv_path)
-#full_df.to_csv(csv_path, index=False)
-print("All markets saved successfully!")
+
+print("\nPnL results from each run:")
+for i, p in enumerate(all_pnls, start=1):
+    print(f"Run {i}: {p}")
+
+# Example if you want to save:
+# csv_path = os.path.join(current_dir, "Test.csv")
+# full_df.to_csv(csv_path, index=False)
